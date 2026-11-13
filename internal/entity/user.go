@@ -6,8 +6,9 @@ import (
 )
 
 type User struct {
-ID   int64
-Name string
+ID       int64
+Name     string
+Position int
 }
 
 func New(id int64, lastName string, firstName string) User {
@@ -18,11 +19,17 @@ func NewFullName(id int64, fullName string) User {
 return User{ID: id, Name: strings.TrimSpace(fullName)}
 }
 
-// ListToString — список с номерами: "1. Иванов Иван\n2. Петров Пётр"
+func listNumber(u User, idx int) int {
+if u.Position > 0 {
+return u.Position
+}
+return idx + 1
+}
+
 func ListToString(users []User) (result string) {
 sb := strings.Builder{}
-for i, user := range users {
-sb.WriteString(fmt.Sprintf("%d. %s", i+1, user.Name))
+for i, u := range users {
+sb.WriteString(fmt.Sprintf("%d. %s", listNumber(u, i), u.Name))
 if i < len(users)-1 {
 sb.WriteByte('\n')
 }
@@ -30,15 +37,14 @@ sb.WriteByte('\n')
 return sb.String()
 }
 
-// ListToStringWithCurrent — то же, но текущий выделен стрелками.
-// Номер сохраняется, чтобы не путать порядок.
 func ListToStringWithCurrent(users []User, currentUser int) string {
 sb := strings.Builder{}
-for idx, user := range users {
+for idx, u := range users {
+n := listNumber(u, idx)
 if currentUser == idx {
-sb.WriteString(fmt.Sprintf("%d. -> %s <-", idx+1, user.Name))
+sb.WriteString(fmt.Sprintf("%d. -> %s <-", n, u.Name))
 } else {
-sb.WriteString(fmt.Sprintf("%d. %s", idx+1, user.Name))
+sb.WriteString(fmt.Sprintf("%d. %s", n, u.Name))
 }
 if idx < len(users)-1 {
 sb.WriteByte('\n')

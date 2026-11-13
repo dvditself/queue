@@ -12,38 +12,55 @@ tgbotapi "github.com/OvyFlash/telegram-bot-api"
 
 "QueueBot/internal/entity"
 "QueueBot/internal/usecase"
+storage "QueueBot/internal/usecase/storage/sqlite"
 )
 
 var (
-ErrNotAdmin   = errors.New("only admin can do this")
-ErrNoQueue    = errors.New("no active queue in this chat")
-ErrNotInQueue = errors.New("user is not in queue")
+ErrNotAdmin         = errors.New("only admin can do this")
+ErrNoQueue          = errors.New("no active queue in this chat")
+ErrNotInQueue       = errors.New("user is not in queue")
+ErrPositionOccupied = storage.ErrPositionOccupied
+ErrPositionTooBig   = storage.ErrPositionTooBig
+ErrAlreadyInQueue   = storage.ErrAlreadyInQueue
 )
 
 const HelloMessage = `Привет! Я бот для создания очередей.
 
 Как пользоваться:
 • /create <название> — создать очередь (например, /create ЛР3)
-• /join <Фамилия Имя> — записаться (например, /join Иванов Иван)
+• /join <Фамилия Имя> — встать в конец
+• /join <Фамилия Имя> <N> — на позицию N
+• /join <Фамилия Имя> #N — то же, с решёткой
 • /leave — выйти из очереди
+• /positions — какие позиции свободны
+• /kickfirst — убрать первого (только админ)
 • /close — закрыть очередь (только админ)
-• /kickfirst — убрать первого из очереди (только админ)
-• /help — справка
-• /start — это сообщение`
+• /debug — реальные позиции (только админ)
+• /help — эта справка`
 
 const CreateUsageMessage = `Использование: /create <название>
 Пример: /create ЛР3`
 
+const JoinUsageMessage = `Использование:
+/join Фамилия Имя — встать в конец
+/join Фамилия Имя 3 — на позицию 3
+/join Фамилия Имя #3 — то же, с решёткой
+
+Пример: /join Иванов Иван 3`
+
 const HelpMessage = `Команды бота:
 /create <название> — создать очередь
-/join <Фамилия Имя> — записаться в очередь
-/leave — выйти из очереди
-/kickfirst — убрать первого из очереди (только админ)
+/join <Фамилия Имя> [N|#N] — записаться (N — позиция)
+/leave — выйти
+/positions — свободные позиции
+/kickfirst — убрать первого (только админ)
 /close — закрыть очередь (только админ)
+/debug — реальные order_number (только админ)
 /start — приветствие
 /help — эта справка
 
-Кнопки под очередью (старт, следующий, убрать первого, закрыть) может нажимать только администратор чата.`
+Позицию можно указать числом (3) или с решёткой (#3).
+Позиция должна быть 1..999 и свободна.`
 
 type TelegramBot struct {
 TgBot *tgbotapi.BotAPI
@@ -78,8 +95,8 @@ func keyFromCallback(cb *tgbotapi.CallbackQuery) string {
 return queueKey(cb.Message.Chat.ID, cb.Message.MessageID)
 }
 
-func (b TelegramBot) SendHelloMessage(message *tgbotapi.Message) error {
-_, err := b.TgBot.Send(tgbotapi.NewMessage(message.Chat.ID, HelloMessage))
+func (b TelegramBot) SendHelloMessage(m *tgbotapi.Message) error {
+_, err := b.TgBot.Send(tgbotapi.NewMessage(m.Chat.ID, HelloMessage))
 return err
 }
 func (b TelegramBot) SendCreateUsage(chatID int64) error {
@@ -95,17 +112,79 @@ _, err := b.TgBot.Send(tgbotapi.NewMessage(chatID, JoinUsageMessage))
 return err
 }
 
+func (b TelegramBot) SendFreePositions(chatID int64) error {
+ctx := context.Background()
+key, err := b.u.GetLastQueueKeyInChat(ctx, chatID)
+if err != nil {
+return err
+}
+if key == "" {
+return ErrNoQueue
+}
+free, err := b.u.GetFreePositions(ctx, key)
+if err != nil {
+return err
+}
+var text string
+if len(free) == 0 {
+text = "Свободных позиций нет. Новая запись встанет в конец."
+} else {
+parts := make([]string, len(free))
+for i, p := range free {
+parts[i] = strconv.Itoa(p)
+}
+text = "Свободные позиции: " + strings.Join(parts, ", ") +
+"\nЗанять: /join Иванов Иван <номер> или /join Иванов Иван #<номер>"
+}
+_, err = b.TgBot.Send(tgbotapi.NewMessage(chatID, text))
+return err
+}
+
+func (b TelegramBot) SendDebug(chatID, userID int64) error {
+ctx := context.Background()
+isAdmin, err := b.IsChatAdmin(ctx, chatID, userID)
+if err != nil {
+return err
+}
+if !isAdmin {
+return ErrNotAdmin
+}
+key, err := b.u.GetLastQueueKeyInChat(ctx, chatID)
+if err != nil {
+return err
+}
+if key == "" {
+return ErrNoQueue
+}
+rows, err := b.u.DebugPositions(ctx, key)
+if err != nil {
+return err
+}
+sb := strings.Builder{}
+sb.WriteString("Отладка order_number (включая удалённых):\n")
+if len(rows) == 0 {
+sb.WriteString("(пусто)")
+}
+for _, r := range rows {
+del := ""
+if r.Deleted == 1 {
+del = " [удалён]"
+}
+sb.WriteString(fmt.Sprintf("#%d %s (id=%d)%s\n", r.Order, r.UserName, r.UserID, del))
+}
+_, err = b.TgBot.Send(tgbotapi.NewMessage(chatID, sb.String()))
+return err
+}
+
 func (b TelegramBot) CreateQueueFromCommand(chatID int64, description string) error {
 msg := tgbotapi.NewMessage(chatID, getMessageContentBeforeStart(description, nil))
 msg.ParseMode = tgbotapi.ModeMarkdown
 kb := GetBeforeStartKeyboard()
 msg.ReplyMarkup = kb
-
 sent, err := b.TgBot.Send(msg)
 if err != nil {
 return fmt.Errorf("couldn't send queue message: %w", err)
 }
-
 key := queueKey(chatID, sent.MessageID)
 if err := b.u.CreateQueue(context.Background(), key, description); err != nil {
 return fmt.Errorf("couldn't create queue: %w", err)
@@ -114,7 +193,7 @@ slog.Info("Queue created", "key", key, "description", description)
 return nil
 }
 
-func (b TelegramBot) JoinQueueFromCommand(chatID, userID int64, fullName string) error {
+func (b TelegramBot) JoinQueueFromCommand(chatID, userID int64, fullName string, position int) error {
 ctx := context.Background()
 key, err := b.u.GetLastQueueKeyInChat(ctx, chatID)
 if err != nil {
@@ -126,10 +205,31 @@ return ErrNoQueue
 if err := b.u.SaveUserName(ctx, userID, fullName); err != nil {
 return fmt.Errorf("couldn't save name: %w", err)
 }
-if err := b.u.JoinQueue(ctx, key, entity.NewFullName(userID, fullName)); err != nil {
-return fmt.Errorf("couldn't join: %w", err)
+if err := b.u.JoinQueue(ctx, key, entity.NewFullName(userID, fullName), position); err != nil {
+return err
 }
-return b.refreshQueueMessage(ctx, key)
+if err := b.refreshQueueMessage(ctx, key); err != nil {
+return err
+}
+// подтверждение
+queue, err := b.u.GetQueue(ctx, key)
+if err == nil {
+myPos := 0
+for i, u := range queue.Users {
+if u.ID == userID {
+myPos = u.Position
+if myPos <= 0 {
+myPos = i + 1
+}
+break
+}
+}
+if myPos > 0 {
+_, _ = b.TgBot.Send(tgbotapi.NewMessage(chatID,
+fmt.Sprintf("%s записан на позицию %d", fullName, myPos)))
+}
+}
+return nil
 }
 
 func (b TelegramBot) LeaveQueueFromCommand(chatID, userID int64) error {

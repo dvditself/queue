@@ -9,13 +9,12 @@ tgbotapi "github.com/OvyFlash/telegram-bot-api"
 )
 
 const (
-QueueDescription      = "В очереди состоят:"
-EndedQueue            = "Участники закончились, значит и очередь тоже. Что делаем дальше?"
-FinishedQueue         = "'Очередь' окончена 🎉"
-OnlyAdminMessage      = "Только администратор чата может это сделать"
-NoActiveQueueMessage  = "В этом чате нет активной очереди"
-NotInQueueMessage     = "Вас нет в этой очереди"
-JoinUsageMessage      = "Использование: /join Фамилия Имя\nПример: /join Иванов Иван"
+QueueDescription     = "В очереди состоят:"
+EndedQueue           = "Участники закончились, значит и очередь тоже. Что делаем дальше?"
+FinishedQueue        = "'Очередь' окончена 🎉"
+OnlyAdminMessage     = "Только администратор чата может это сделать"
+NoActiveQueueMessage = "В этом чате нет активной очереди"
+NotInQueueMessage    = "Вас нет в этой очереди"
 )
 
 func getMessageContentBeforeStart(title string, users []entity.User) string {
