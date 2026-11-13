@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	// Sqlite driver...
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 
 	"QueueBot/internal/entity"
 )
@@ -236,7 +236,7 @@ func (s Database) DeleteQueue(ctx context.Context, messageID string) error {
 }
 
 func NewDatabase(databasePath string) (*Database, error) {
-	db, err := sql.Open("sqlite3", fmt.Sprintf("%s?cache=shared", databasePath))
+	db, err := sql.Open("sqlite", fmt.Sprintf("%s?cache=shared", databasePath))
 	if err != nil {
 		return nil, fmt.Errorf("couldn't open database: %w", err)
 	}
