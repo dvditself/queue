@@ -29,6 +29,8 @@ case client.StartQueueData:
 return s.bot.Start(ctx, cb, false)
 case client.StartQueueShuffleData:
 return s.bot.Start(ctx, cb, true)
+case client.KickFirstData:
+return s.bot.KickFirst(ctx, cb)
 case client.NextData:
 return s.bot.Next(ctx, cb)
 case client.GoToMenuData:

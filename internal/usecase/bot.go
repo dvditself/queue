@@ -12,6 +12,7 @@ type Bot interface {
 CreateQueue(ctx context.Context, messageID string, description string) error
 JoinQueue(ctx context.Context, messageID string, user entity.User) error
 LeaveQueue(ctx context.Context, messageID string, userID int64) error
+KickFirstUser(ctx context.Context, messageID string) error
 StartQueue(ctx context.Context, messageID string, shuffle bool) error
 FinishQueue(ctx context.Context, messageID string) error
 SetNextPersonToQueue(ctx context.Context, messageID string) error
@@ -43,6 +44,12 @@ return nil
 func (b BotUseCase) LeaveQueue(ctx context.Context, messageID string, userID int64) error {
 if err := b.Storage.LeaveQueue(ctx, messageID, userID); err != nil {
 return fmt.Errorf("couldn't leave queue: %w", err)
+}
+return nil
+}
+func (b BotUseCase) KickFirstUser(ctx context.Context, messageID string) error {
+if err := b.Storage.KickFirstUser(ctx, messageID); err != nil {
+return fmt.Errorf("couldn't kick first user: %w", err)
 }
 return nil
 }

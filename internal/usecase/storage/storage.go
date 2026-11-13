@@ -10,6 +10,7 @@ type Storage interface {
 CreateQueue(ctx context.Context, messageID string, description string) error
 JoinQueue(ctx context.Context, messageID string, user entity.User) error
 LeaveQueue(ctx context.Context, messageID string, userID int64) error
+KickFirstUser(ctx context.Context, messageID string) error
 GetQueue(ctx context.Context, messageID string) (entity.Queue, error)
 
 StartQueue(ctx context.Context, messageID string, isShuffle bool) error

@@ -9,12 +9,13 @@ tgbotapi "github.com/OvyFlash/telegram-bot-api"
 )
 
 const (
-StartCommand  = "start"
-CreateCommand = "create"
-HelpCommand   = "help"
-JoinCommand   = "join"
-LeaveCommand  = "leave"
-CloseCommand  = "close"
+StartCommand     = "start"
+CreateCommand    = "create"
+HelpCommand      = "help"
+JoinCommand      = "join"
+LeaveCommand     = "leave"
+CloseCommand     = "close"
+KickFirstCommand = "kickfirst"
 )
 
 func (s BotServer) HandleMessage(message *tgbotapi.Message) error {
@@ -43,6 +44,8 @@ return s.bot.SendJoinUsage(chatID)
 return s.wrapUserError(s.bot.JoinQueueFromCommand(chatID, userID, name), chatID)
 case LeaveCommand:
 return s.wrapUserError(s.bot.LeaveQueueFromCommand(chatID, userID), chatID)
+case KickFirstCommand:
+return s.wrapUserError(s.bot.KickFirstFromCommand(chatID, userID), chatID)
 case CloseCommand:
 return s.wrapUserError(s.bot.CloseQueueFromCommand(chatID, userID), chatID)
 }

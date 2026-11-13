@@ -53,6 +53,35 @@ _, err = stmt.ExecContext(ctx, messageID, userID)
 return err
 }
 
+func (s Database) KickFirstUser(ctx context.Context, messageID string) error {
+tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
+if err != nil {
+return fmt.Errorf("couldn't begin tx: %w", err)
+}
+defer func() { _ = tx.Rollback() }()
+
+_, err = tx.ExecContext(ctx, `
+UPDATE participants SET isDeleted=1
+WHERE message_id = ? AND isDeleted = 0 AND user_id = (
+SELECT user_id FROM participants
+WHERE message_id = ? AND isDeleted = 0
+ORDER BY order_number LIMIT 1
+)`, messageID, messageID)
+if err != nil {
+return fmt.Errorf("couldn't kick first participant: %w", err)
+}
+
+_, err = tx.ExecContext(ctx, `
+UPDATE queues SET current_user_index =
+CASE WHEN current_user_index > 0 THEN current_user_index - 1 ELSE 0 END
+WHERE message_id = ?`, messageID)
+if err != nil {
+return fmt.Errorf("couldn't adjust current index: %w", err)
+}
+
+return tx.Commit()
+}
+
 func (s Database) GetQueue(ctx context.Context, messageID string) (entity.Queue, error) {
 descStmt, err := s.db.PrepareContext(ctx, "SELECT description, current_user_index FROM queues WHERE message_id = ?")
 if err != nil {

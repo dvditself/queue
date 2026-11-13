@@ -26,7 +26,8 @@ const HelloMessage = `Привет! Я бот для создания очере
 • /create <название> — создать очередь (например, /create ЛР3)
 • /join <Фамилия Имя> — записаться (например, /join Иванов Иван)
 • /leave — выйти из очереди
-• /close — закрыть очередь (только администратор чата)
+• /close — закрыть очередь (только админ)
+• /kickfirst — убрать первого из очереди (только админ)
 • /help — справка
 • /start — это сообщение`
 
@@ -37,11 +38,12 @@ const HelpMessage = `Команды бота:
 /create <название> — создать очередь
 /join <Фамилия Имя> — записаться в очередь
 /leave — выйти из очереди
+/kickfirst — убрать первого из очереди (только админ)
 /close — закрыть очередь (только админ)
 /start — приветствие
 /help — эта справка
 
-Кнопки под очередью (старт, следующий, закрыть) может нажимать только администратор чата.`
+Кнопки под очередью (старт, следующий, убрать первого, закрыть) может нажимать только администратор чата.`
 
 type TelegramBot struct {
 TgBot *tgbotapi.BotAPI
@@ -159,6 +161,28 @@ return fmt.Errorf("couldn't leave: %w", err)
 return b.refreshQueueMessage(ctx, key)
 }
 
+func (b TelegramBot) KickFirstFromCommand(chatID, userID int64) error {
+ctx := context.Background()
+isAdmin, err := b.IsChatAdmin(ctx, chatID, userID)
+if err != nil {
+return fmt.Errorf("couldn't check admin: %w", err)
+}
+if !isAdmin {
+return ErrNotAdmin
+}
+key, err := b.u.GetLastQueueKeyInChat(ctx, chatID)
+if err != nil {
+return fmt.Errorf("couldn't find queue: %w", err)
+}
+if key == "" {
+return ErrNoQueue
+}
+if err := b.u.KickFirstUser(ctx, key); err != nil {
+return fmt.Errorf("couldn't kick first: %w", err)
+}
+return b.refreshQueueMessage(ctx, key)
+}
+
 func (b TelegramBot) CloseQueueFromCommand(chatID, userID int64) error {
 ctx := context.Background()
 isAdmin, err := b.IsChatAdmin(ctx, chatID, userID)
@@ -219,6 +243,14 @@ if err := b.u.SetNextPersonToQueue(ctx, key); err != nil {
 return fmt.Errorf("couldn't next: %w", err)
 }
 return b.sendStatus(ctx, cb)
+}
+
+func (b TelegramBot) KickFirst(ctx context.Context, cb *tgbotapi.CallbackQuery) error {
+key := keyFromCallback(cb)
+if err := b.u.KickFirstUser(ctx, key); err != nil {
+return fmt.Errorf("couldn't kick first: %w", err)
+}
+return b.refreshQueueMessage(ctx, key)
 }
 
 func (b TelegramBot) GoToMenu(ctx context.Context, cb *tgbotapi.CallbackQuery) error {

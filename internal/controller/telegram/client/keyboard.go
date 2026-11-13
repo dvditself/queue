@@ -7,7 +7,8 @@ tgbotapi "github.com/OvyFlash/telegram-bot-api"
 const (
 StartQueueButton        = "Старт в порядке очереди"
 StartQueueShuffleButton = "Старт в случайном порядке"
-CloseQueueButton        = "Закрыть очередь (только админ)"
+KickFirstButton         = "Убрать первого (админ)"
+CloseQueueButton        = "Закрыть очередь (админ)"
 NextButton              = "Следующий"
 GoToMenuButton          = "Перейти в меню"
 FinishQueueButton       = "Закончить"
@@ -16,6 +17,7 @@ FinishQueueButton       = "Закончить"
 const (
 StartQueueData        = "start_queue"
 StartQueueShuffleData = "start_queue_shuffle"
+KickFirstData         = "kick_first"
 NextData              = "next_user"
 GoToMenuData          = "go_to_menu"
 FinishQueueData       = "finish_queue"
@@ -25,6 +27,7 @@ func GetBeforeStartKeyboard() tgbotapi.InlineKeyboardMarkup {
 return tgbotapi.NewInlineKeyboardMarkup(
 tgbotapi.NewInlineKeyboardRow(startQueueButton()),
 tgbotapi.NewInlineKeyboardRow(startQueueShuffleButton()),
+tgbotapi.NewInlineKeyboardRow(kickFirstButton()),
 tgbotapi.NewInlineKeyboardRow(closeQueueButton()),
 )
 }
@@ -32,6 +35,7 @@ tgbotapi.NewInlineKeyboardRow(closeQueueButton()),
 func GetAfterStartKeyboard() tgbotapi.InlineKeyboardMarkup {
 return tgbotapi.NewInlineKeyboardMarkup(
 tgbotapi.NewInlineKeyboardRow(nextButton()),
+tgbotapi.NewInlineKeyboardRow(kickFirstButton()),
 tgbotapi.NewInlineKeyboardRow(closeQueueButton()),
 )
 }
@@ -48,6 +52,9 @@ return tgbotapi.NewInlineKeyboardButtonData(StartQueueButton, StartQueueData)
 }
 func startQueueShuffleButton() tgbotapi.InlineKeyboardButton {
 return tgbotapi.NewInlineKeyboardButtonData(StartQueueShuffleButton, StartQueueShuffleData)
+}
+func kickFirstButton() tgbotapi.InlineKeyboardButton {
+return tgbotapi.NewInlineKeyboardButtonData(KickFirstButton, KickFirstData)
 }
 func nextButton() tgbotapi.InlineKeyboardButton {
 return tgbotapi.NewInlineKeyboardButtonData(NextButton, NextData)
