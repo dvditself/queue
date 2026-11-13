@@ -1,20 +1,20 @@
-package client
+﻿package client
 
 import (
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 )
 
-const LogInOurOutButton = "Добавиться/выйти из очереди"
+const LogInOurOutButton = "Р”РѕР±Р°РІРёС‚СЊСЃСЏ/РІС‹Р№С‚Рё РёР· РѕС‡РµСЂРµРґРё"
 
 const (
-	StartQueueButton        = "Старт в порядке очереди"
-	StartQueueShuffleButton = "Старт в случайном порядке"
+	StartQueueButton        = "РЎС‚Р°СЂС‚ РІ РїРѕСЂСЏРґРєРµ РѕС‡РµСЂРµРґРё"
+	StartQueueShuffleButton = "РЎС‚Р°СЂС‚ РІ СЃР»СѓС‡Р°Р№РЅРѕРј РїРѕСЂСЏРґРєРµ"
 )
 
 const (
-	NextButton        = "Следующий"
-	GoToMenuButton    = "Перейти в меню"
-	FinishQueueButton = "Закончить"
+	NextButton        = "РЎР»РµРґСѓСЋС‰РёР№"
+	GoToMenuButton    = "РџРµСЂРµР№С‚Рё РІ РјРµРЅСЋ"
+	FinishQueueButton = "Р—Р°РєРѕРЅС‡РёС‚СЊ"
 )
 
 const (

@@ -1,11 +1,11 @@
-package main
+﻿package main
 
 import (
 	"log"
 	"log/slog"
 	"os"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 
 	"QueueBot/config"
 	"QueueBot/internal/controller/telegram"

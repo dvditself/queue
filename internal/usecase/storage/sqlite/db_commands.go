@@ -1,4 +1,4 @@
-package sqlite
+﻿package sqlite
 
 const CreateTables string = `
 CREATE TABLE IF NOT EXISTS queues

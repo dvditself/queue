@@ -1,11 +1,10 @@
-module QueueBot
+﻿module QueueBot
 
-go 1.26.0
-
-require github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
+go 1.27.4
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
+	github.com/OvyFlash/telegram-bot-api v0.0.0-20261109145030-db575b9b8ee0
 	github.com/ilyakaznacheev/cleanenv v1.5.0
 	github.com/stretchr/testify v1.9.0
 	modernc.org/sqlite v1.34.0

@@ -1,4 +1,4 @@
-package entity
+﻿package entity
 
 type Queue struct {
 	MessageID        string

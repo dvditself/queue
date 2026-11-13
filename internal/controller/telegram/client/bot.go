@@ -5,7 +5,7 @@ import (
 "fmt"
 "log/slog"
 
-tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+tgbotapi "github.com/OvyFlash/telegram-bot-api"
 
 "QueueBot/internal/entity"
 "QueueBot/internal/usecase"
@@ -48,33 +48,45 @@ func keyFromCallback(cb *tgbotapi.CallbackQuery) string {
 return queueKey(cb.Message.Chat.ID, cb.Message.MessageID)
 }
 
+// threadIDForSend превращает "General" (1) в 0, чтобы не отправлять message_thread_id=1
+func threadIDForSend(threadID int) int {
+if threadID == 1 {
+return 0
+}
+return threadID
+}
+
 func (b TelegramBot) SendHelloMessage(message *tgbotapi.Message) error {
 msg := tgbotapi.NewMessage(message.Chat.ID, HelloMessage)
+msg.MessageThreadID = threadIDForSend(message.MessageThreadID)
 if _, err := b.TgBot.Send(msg); err != nil {
 return fmt.Errorf("couldn't send hello message: %w", err)
 }
 return nil
 }
 
-func (b TelegramBot) SendCreateUsage(chatID int64) error {
+func (b TelegramBot) SendCreateUsage(chatID int64, threadID int) error {
 msg := tgbotapi.NewMessage(chatID, CreateUsageMessage)
+msg.MessageThreadID = threadIDForSend(threadID)
 if _, err := b.TgBot.Send(msg); err != nil {
 return fmt.Errorf("couldn't send create usage: %w", err)
 }
 return nil
 }
 
-func (b TelegramBot) SendHelpMessage(chatID int64) error {
+func (b TelegramBot) SendHelpMessage(chatID int64, threadID int) error {
 msg := tgbotapi.NewMessage(chatID, HelpMessage)
+msg.MessageThreadID = threadIDForSend(threadID)
 if _, err := b.TgBot.Send(msg); err != nil {
 return fmt.Errorf("couldn't send help message: %w", err)
 }
 return nil
 }
 
-func (b TelegramBot) CreateQueueFromCommand(chatID int64, description string) error {
+func (b TelegramBot) CreateQueueFromCommand(chatID int64, threadID int, description string) error {
 msg := tgbotapi.NewMessage(chatID, getMessageContentBeforeStart(description, nil))
 msg.ParseMode = tgbotapi.ModeMarkdown
+msg.MessageThreadID = threadIDForSend(threadID)
 keyboard := GetBeforeStartKeyboard()
 msg.ReplyMarkup = keyboard
 
@@ -88,7 +100,7 @@ if err := b.u.CreateQueue(context.Background(), key, description); err != nil {
 return fmt.Errorf("couldn't create queue: %w", err)
 }
 
-slog.Info("Queue created", "key", key, "description", description)
+slog.Info("Queue created", "key", key, "description", description, "threadID", threadID)
 return nil
 }
 
