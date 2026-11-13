@@ -1,122 +1,101 @@
-package client
+﻿package client
 
 import (
-	"fmt"
+"fmt"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
-	"QueueBot/internal/entity"
+"QueueBot/internal/entity"
 )
 
 const (
-	ForwardQueueToMessage = "Отлично! Теперь с помощью кнопки ниже вы можете переслать свою 'очередь'"
-	QueueDescription      = "В очереди состоят:"
-	EndedQueue            = "Участники закончились, значит и очередь тоже. Что делаем дальше?"
-	FinishedQueue         = "'Очередь' окончена 🎉"
-	ForwardQueueButton    = "Переслать 'очередь'"
+QueueDescription = "В очереди состоят:"
+EndedQueue       = "Участники закончились, значит и очередь тоже. Что делаем дальше?"
+FinishedQueue    = "'Очередь' окончена 🎉"
 )
 
 func getMessageContentBeforeStart(title string, users []entity.User) string {
-	return fmt.Sprintf(
-		"*%s*\n%s\n%s",
-		title,
-		QueueDescription,
-		cutStringByLines(entity.ListToString(users), 26),
-	)
+return fmt.Sprintf(
+"*%s*\n%s\n%s",
+title,
+QueueDescription,
+cutStringByLines(entity.ListToString(users), 26),
+)
 }
 
 func getMessageContentAfterStart(title string, users []entity.User, currentPersonIndex int) string {
-	return fmt.Sprintf(
-		"*%s*\n%s\n%s",
-		title,
-		QueueDescription,
-		cutStringByLinesWithCurrent(entity.ListToStringWithCurrent(users, currentPersonIndex), 13, currentPersonIndex),
-	)
+return fmt.Sprintf(
+"*%s*\n%s\n%s",
+title,
+QueueDescription,
+cutStringByLinesWithCurrent(entity.ListToStringWithCurrent(users, currentPersonIndex), 13, currentPersonIndex),
+)
 }
 
 func GetQueueMessageContent(description string) tgbotapi.InputTextMessageContent {
-	answer := tgbotapi.InputTextMessageContent{
-		Text:      getMessageContentBeforeStart(description, nil),
-		ParseMode: tgbotapi.ModeMarkdown,
-	}
-
-	return answer
+return tgbotapi.InputTextMessageContent{
+Text:      getMessageContentBeforeStart(description, nil),
+ParseMode: tgbotapi.ModeMarkdown,
+}
 }
 
-func GetQueueMessage(messageID string, users []entity.User, description string) tgbotapi.EditMessageTextConfig {
-	keyboard := GetBeforeStartKeyboard()
-	answer := tgbotapi.EditMessageTextConfig{
-		BaseEdit: tgbotapi.BaseEdit{
-			InlineMessageID: messageID,
-			ReplyMarkup:     &keyboard,
-		},
-		Text:      getMessageContentBeforeStart(description, users),
-		ParseMode: tgbotapi.ModeMarkdown,
-	}
-
-	return answer
+func GetQueueMessage(chatID int64, messageID int, users []entity.User, description string) tgbotapi.EditMessageTextConfig {
+keyboard := GetBeforeStartKeyboard()
+return tgbotapi.EditMessageTextConfig{
+BaseEdit: tgbotapi.BaseEdit{
+ChatID:      chatID,
+MessageID:   messageID,
+ReplyMarkup: &keyboard,
+},
+Text:      getMessageContentBeforeStart(description, users),
+ParseMode: tgbotapi.ModeMarkdown,
+}
 }
 
-func GetUpdatedQueueMessage(messageID string, description string, users []entity.User) tgbotapi.EditMessageTextConfig {
-	keyboard := GetBeforeStartKeyboard()
-	answer := tgbotapi.EditMessageTextConfig{
-		BaseEdit: tgbotapi.BaseEdit{
-			InlineMessageID: messageID,
-			ReplyMarkup:     &keyboard,
-		},
-		Text:      getMessageContentBeforeStart(description, users),
-		ParseMode: tgbotapi.ModeMarkdown,
-	}
-
-	return answer
+func GetUpdatedQueueMessage(chatID int64, messageID int, description string, users []entity.User) tgbotapi.EditMessageTextConfig {
+keyboard := GetBeforeStartKeyboard()
+return tgbotapi.EditMessageTextConfig{
+BaseEdit: tgbotapi.BaseEdit{
+ChatID:      chatID,
+MessageID:   messageID,
+ReplyMarkup: &keyboard,
+},
+Text:      getMessageContentBeforeStart(description, users),
+ParseMode: tgbotapi.ModeMarkdown,
+}
 }
 
-func GetForwardMessage(chatID int64, description string) tgbotapi.MessageConfig {
-	answer := tgbotapi.NewMessage(chatID, ForwardQueueToMessage)
-	answer.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonSwitch(ForwardQueueButton, description),
-	))
-	answer.ParseMode = tgbotapi.ModeMarkdown
-
-	return answer
+func GetQueueAfterStartMessage(chatID int64, messageID int, description string, users []entity.User, currentPersonIndex int) tgbotapi.EditMessageTextConfig {
+keyboard := GetAfterStartKeyboard()
+return tgbotapi.EditMessageTextConfig{
+BaseEdit: tgbotapi.BaseEdit{
+ChatID:      chatID,
+MessageID:   messageID,
+ReplyMarkup: &keyboard,
+},
+Text:      getMessageContentAfterStart(description, users, currentPersonIndex),
+ParseMode: tgbotapi.ModeMarkdown,
+}
 }
 
-func GetQueueAfterStartMessage(messageID string, description string, users []entity.User, currentPersonIndex int) tgbotapi.EditMessageTextConfig {
-	keyboard := GetAfterStartKeyboard()
-
-	answer := tgbotapi.EditMessageTextConfig{
-		BaseEdit: tgbotapi.BaseEdit{
-			InlineMessageID: messageID,
-			ReplyMarkup:     &keyboard,
-		},
-		Text:      getMessageContentAfterStart(description, users, currentPersonIndex),
-		ParseMode: tgbotapi.ModeMarkdown,
-	}
-
-	return answer
+func GetEndQueueMessage(chatID int64, messageID int) tgbotapi.EditMessageTextConfig {
+keyboard := GetEndedQueueKeyboard()
+return tgbotapi.EditMessageTextConfig{
+BaseEdit: tgbotapi.BaseEdit{
+ChatID:      chatID,
+MessageID:   messageID,
+ReplyMarkup: &keyboard,
+},
+Text: EndedQueue,
+}
 }
 
-func GetEndQueueMessage(messageID string) tgbotapi.EditMessageTextConfig {
-	keyboard := GetEndedQueueKeyboard()
-
-	answer := tgbotapi.EditMessageTextConfig{
-		BaseEdit: tgbotapi.BaseEdit{
-			InlineMessageID: messageID,
-			ReplyMarkup:     &keyboard,
-		},
-		Text: EndedQueue,
-	}
-
-	return answer
+func GetFinishedMessage(chatID int64, messageID int) tgbotapi.EditMessageTextConfig {
+return tgbotapi.EditMessageTextConfig{
+BaseEdit: tgbotapi.BaseEdit{
+ChatID:    chatID,
+MessageID: messageID,
+},
+Text: FinishedQueue,
 }
-
-func GetFinishedMessage(messageID string) tgbotapi.EditMessageTextConfig {
-	answer := tgbotapi.EditMessageTextConfig{
-		BaseEdit: tgbotapi.BaseEdit{
-			InlineMessageID: messageID,
-		},
-		Text: FinishedQueue,
-	}
-
-	return answer
 }
