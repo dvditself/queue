@@ -13,8 +13,8 @@ QueueDescription     = "В очереди состоят:"
 EndedQueue           = "Участники закончились, значит и очередь тоже. Что делаем дальше?"
 FinishedQueue        = "'Очередь' окончена 🎉"
 OnlyAdminMessage     = "Только администратор чата может это сделать"
-NoActiveQueueMessage = "В этом чате нет активной очереди"
-NotInQueueMessage    = "Вас нет в этой очереди"
+NoActiveQueueMessage = "В этой теме нет активной очереди"
+NotInQueueMessage    = "Вас нет в очереди этой темы"
 )
 
 func getMessageContentBeforeStart(title string, users []entity.User) string {

@@ -18,7 +18,7 @@ userID := cb.From.ID
 
 isAdmin, err := s.bot.IsChatAdmin(ctx, chatID, userID)
 if err != nil {
-return fmt.Errorf("couldn't check admin: %w", err)
+return err
 }
 if !isAdmin {
 return client.ErrNotAdmin
@@ -59,7 +59,6 @@ slog.Error("Couldn't handle callback", "reason", err, "data", cb.Data, "user_id"
 alertText = "Ошибка"
 }
 }
-
 callback := tgbotapi.NewCallback(cb.ID, alertText)
 if _, err := s.bot.TgBot.Request(callback); err != nil {
 return fmt.Errorf("couldn't process callback: %w", err)

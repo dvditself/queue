@@ -20,7 +20,6 @@ return &BotServer{bot: bot}
 func (s BotServer) Listen(config tgbotapi.UpdateConfig, errChan chan<- error) {
 updates := s.bot.TgBot.GetUpdatesChan(config)
 slog.Info("Started listening update channel")
-
 for update := range updates {
 go func(update tgbotapi.Update) {
 switch {
