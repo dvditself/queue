@@ -5,28 +5,30 @@ tgbotapi "github.com/OvyFlash/telegram-bot-api"
 )
 
 const (
-StartQueueButton        = "Старт в порядке очереди"
-StartQueueShuffleButton = "Старт в случайном порядке"
-KickFirstButton         = "Убрать первого (админ)"
-CloseQueueButton        = "Закрыть очередь (админ)"
-NextButton              = "Следующий"
-GoToMenuButton          = "Перейти в меню"
-FinishQueueButton       = "Закончить"
+StartQueueButton  = "Старт в порядке очереди"
+KickFirstButton   = "Убрать первого (админ)"
+CloseQueueButton  = "Закрыть очередь (админ)"
+NextButton        = "Следующий"
+GoToMenuButton    = "Перейти в меню"
+FinishQueueButton = "Закончить"
+
+ConfirmYesButton = "Да, закрыть"
+ConfirmNoButton  = "Отмена"
 )
 
 const (
-StartQueueData        = "start_queue"
-StartQueueShuffleData = "start_queue_shuffle"
-KickFirstData         = "kick_first"
-NextData              = "next_user"
-GoToMenuData          = "go_to_menu"
-FinishQueueData       = "finish_queue"
+StartQueueData   = "start_queue"
+KickFirstData    = "kick_first"
+NextData         = "next_user"
+GoToMenuData     = "go_to_menu"
+FinishQueueData  = "finish_queue"
+ConfirmCloseData = "close_confirm_yes" // использование: ConfirmCloseData + ":" + key
+CancelCloseData  = "close_confirm_no"
 )
 
 func GetBeforeStartKeyboard() tgbotapi.InlineKeyboardMarkup {
 return tgbotapi.NewInlineKeyboardMarkup(
 tgbotapi.NewInlineKeyboardRow(startQueueButton()),
-tgbotapi.NewInlineKeyboardRow(startQueueShuffleButton()),
 tgbotapi.NewInlineKeyboardRow(kickFirstButton()),
 tgbotapi.NewInlineKeyboardRow(closeQueueButton()),
 )
@@ -47,11 +49,20 @@ tgbotapi.NewInlineKeyboardRow(endQueueButton()),
 )
 }
 
+// GetCloseConfirmKeyboard — клавиатура подтверждения закрытия конкретной очереди.
+// key кодируется прямо в callback data, чтобы при нажатии "Да" закрыть ИМЕННО эту очередь,
+// а не последнюю в чате (race condition при создании новой, пока висело подтверждение).
+func GetCloseConfirmKeyboard(key string) tgbotapi.InlineKeyboardMarkup {
+return tgbotapi.NewInlineKeyboardMarkup(
+tgbotapi.NewInlineKeyboardRow(
+tgbotapi.NewInlineKeyboardButtonData(ConfirmYesButton, ConfirmCloseData+":"+key),
+tgbotapi.NewInlineKeyboardButtonData(ConfirmNoButton, CancelCloseData),
+),
+)
+}
+
 func startQueueButton() tgbotapi.InlineKeyboardButton {
 return tgbotapi.NewInlineKeyboardButtonData(StartQueueButton, StartQueueData)
-}
-func startQueueShuffleButton() tgbotapi.InlineKeyboardButton {
-return tgbotapi.NewInlineKeyboardButtonData(StartQueueShuffleButton, StartQueueShuffleData)
 }
 func kickFirstButton() tgbotapi.InlineKeyboardButton {
 return tgbotapi.NewInlineKeyboardButtonData(KickFirstButton, KickFirstData)

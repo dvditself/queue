@@ -15,7 +15,7 @@ LeaveQueue(ctx context.Context, messageID string, userID int64) error
 KickFirstUser(ctx context.Context, messageID string) error
 KickAtPosition(ctx context.Context, messageID string, position int) error
 SwitchPositions(ctx context.Context, messageID string, userID int64, position int) error
-StartQueue(ctx context.Context, messageID string, shuffle bool) error
+StartQueue(ctx context.Context, messageID string) error
 FinishQueue(ctx context.Context, messageID string) error
 SetNextPersonToQueue(ctx context.Context, messageID string) error
 GetQueue(ctx context.Context, messageID string) (entity.Queue, error)
@@ -38,7 +38,7 @@ func (b BotUseCase) LeaveQueue(ctx context.Context, m string, uid int64) error {
 func (b BotUseCase) KickFirstUser(ctx context.Context, m string) error { return b.Storage.KickFirstUser(ctx, m) }
 func (b BotUseCase) KickAtPosition(ctx context.Context, m string, p int) error { return b.Storage.KickAtPosition(ctx, m, p) }
 func (b BotUseCase) SwitchPositions(ctx context.Context, m string, uid int64, p int) error { return b.Storage.SwitchPositions(ctx, m, uid, p) }
-func (b BotUseCase) StartQueue(ctx context.Context, m string, s bool) error { return b.Storage.StartQueue(ctx, m, s) }
+func (b BotUseCase) StartQueue(ctx context.Context, m string) error { return b.Storage.StartQueue(ctx, m) }
 func (b BotUseCase) FinishQueue(ctx context.Context, m string) error { return b.Storage.DeleteQueue(ctx, m) }
 func (b BotUseCase) SetNextPersonToQueue(ctx context.Context, m string) error { return b.Storage.IncrementCurrentPerson(ctx, m) }
 func (b BotUseCase) GetQueue(ctx context.Context, m string) (entity.Queue, error) { return b.Storage.GetQueue(ctx, m) }

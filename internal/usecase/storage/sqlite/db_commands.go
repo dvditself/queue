@@ -30,3 +30,10 @@ CREATE TABLE IF NOT EXISTS user_names
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 `
+
+// CreateUniquePosIndex — создаётся ПОСЛЕ миграции, чтобы не упасть на дубликатах.
+const CreateUniquePosIndex string = `
+CREATE UNIQUE INDEX IF NOT EXISTS idx_participants_msg_pos
+ON participants (message_id, order_number)
+WHERE isDeleted = 0;
+`

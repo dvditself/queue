@@ -19,7 +19,7 @@ FreePositions(ctx context.Context, messageID string) ([]int, error)
 DebugPositions(ctx context.Context, messageID string) ([]sqlite.DebugRow, error)
 DebugChatQueues(ctx context.Context, chatID int64) ([]string, error)
 
-StartQueue(ctx context.Context, messageID string, isShuffle bool) error
+StartQueue(ctx context.Context, messageID string) error
 IncrementCurrentPerson(ctx context.Context, messageID string) error
 DeleteQueue(ctx context.Context, messageID string) error
 

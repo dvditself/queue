@@ -22,26 +22,67 @@ ErrSamePosition     = errors.New("you are already at this position")
 ErrNotInQueue       = errors.New("user is not in queue")
 )
 
-const maxAllowedPosition = 999
+const (
+maxAllowedPosition = 999
+tempSwitchPosition = -999999
+)
 
 type Database struct{ db *sql.DB }
 
 func (s Database) Close() error { return s.db.Close() }
 
-func (s Database) migrateOrderNumbers(ctx context.Context) error {
-_, err := s.db.ExecContext(ctx, `
-UPDATE participants SET order_number = (
-SELECT rn FROM (
+// fullRenumber — двухфазный renumber всех не удалённых участников по всем очередям.
+// Использует temp-таблицу, чтобы не зависеть от порядка обновления (SQLite
+// пересчитывает подзапрос для каждой строки и видит промежуточное состояние).
+func (s Database) fullRenumber(ctx context.Context) error {
+tx, err := s.db.BeginTx(ctx, nil)
+if err != nil {
+return fmt.Errorf("fullRenumber begin tx: %w", err)
+}
+defer func() { _ = tx.Rollback() }()
+
+if _, err := tx.ExecContext(ctx, "DROP TABLE IF EXISTS temp._renum"); err != nil {
+return fmt.Errorf("drop temp: %w", err)
+}
+if _, err := tx.ExecContext(ctx, `
+CREATE TEMP TABLE _renum (
+user_id    INTEGER NOT NULL,
+message_id TEXT NOT NULL,
+rn         INTEGER NOT NULL,
+PRIMARY KEY(user_id, message_id)
+)`); err != nil {
+return fmt.Errorf("create temp: %w", err)
+}
+if _, err := tx.ExecContext(ctx, `
+INSERT INTO _renum (user_id, message_id, rn)
 SELECT user_id, message_id,
-       ROW_NUMBER() OVER (PARTITION BY message_id ORDER BY joined_at) AS rn
-FROM participants
-WHERE isDeleted=0 AND (order_number IS NULL OR order_number=0)
-) AS sub
-WHERE participants.user_id=sub.user_id
-  AND participants.message_id=sub.message_id
+       ROW_NUMBER() OVER (
+           PARTITION BY message_id
+           ORDER BY COALESCE(order_number, 1000000), joined_at
+       )
+FROM participants WHERE isDeleted=0`); err != nil {
+return fmt.Errorf("snapshot: %w", err)
+}
+// Фаза 1: гарантированно уникальные значения
+if _, err := tx.ExecContext(ctx, `
+UPDATE participants SET order_number = 1000000 + rowid
+WHERE isDeleted=0`); err != nil {
+return fmt.Errorf("offset: %w", err)
+}
+// Фаза 2: назначаем 1..N из снимка
+if _, err := tx.ExecContext(ctx, `
+UPDATE participants SET order_number = (
+SELECT rn FROM _renum
+WHERE _renum.user_id = participants.user_id
+  AND _renum.message_id = participants.message_id
 )
-WHERE isDeleted=0 AND (order_number IS NULL OR order_number=0)`)
-return err
+WHERE isDeleted=0`); err != nil {
+return fmt.Errorf("assign: %w", err)
+}
+if _, err := tx.ExecContext(ctx, "DROP TABLE IF EXISTS temp._renum"); err != nil {
+return fmt.Errorf("cleanup: %w", err)
+}
+return tx.Commit()
 }
 
 func (s Database) migrateOldKeys(ctx context.Context) error {
@@ -76,6 +117,15 @@ return err
 return nil
 }
 
+func isUniqueViolation(err error) bool {
+if err == nil {
+return false
+}
+msg := err.Error()
+return strings.Contains(msg, "UNIQUE constraint failed") ||
+strings.Contains(msg, "constraint failed: UNIQUE")
+}
+
 func (s Database) CreateQueue(ctx context.Context, messageID string, description string) error {
 stmt, err := s.db.PrepareContext(ctx, "INSERT INTO queues (message_id, description) VALUES (?, ?)")
 if err != nil {
@@ -87,7 +137,9 @@ return err
 }
 
 func (s Database) FreePositions(ctx context.Context, messageID string) ([]int, error) {
-rows, err := s.db.QueryContext(ctx, "SELECT order_number FROM participants WHERE message_id=? AND isDeleted=0", messageID)
+rows, err := s.db.QueryContext(ctx,
+"SELECT order_number FROM participants WHERE message_id=? AND isDeleted=0 AND order_number > 0",
+messageID)
 if err != nil {
 return nil, err
 }
@@ -116,9 +168,6 @@ return free, nil
 }
 
 func (s Database) JoinQueue(ctx context.Context, messageID string, user entity.User, position int) error {
-if err := s.migrateOrderNumbers(ctx); err != nil {
-return err
-}
 tx, err := s.db.BeginTx(ctx, nil)
 if err != nil {
 return fmt.Errorf("begin tx: %w", err)
@@ -126,7 +175,9 @@ return fmt.Errorf("begin tx: %w", err)
 defer func() { _ = tx.Rollback() }()
 
 var cnt int
-if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM participants WHERE message_id=? AND user_id=? AND isDeleted=0", messageID, user.ID).Scan(&cnt); err != nil {
+if err := tx.QueryRowContext(ctx,
+"SELECT COUNT(*) FROM participants WHERE message_id=? AND user_id=? AND isDeleted=0",
+messageID, user.ID).Scan(&cnt); err != nil {
 return fmt.Errorf("check existing: %w", err)
 }
 if cnt > 0 && position <= 0 {
@@ -135,7 +186,9 @@ return ErrAlreadyInQueue
 
 var targetPos int
 if position <= 0 {
-rows, err := tx.QueryContext(ctx, "SELECT order_number FROM participants WHERE message_id=? AND isDeleted=0", messageID)
+rows, err := tx.QueryContext(ctx,
+"SELECT order_number FROM participants WHERE message_id=? AND isDeleted=0 AND order_number > 0",
+messageID)
 if err != nil {
 return fmt.Errorf("query occupied: %w", err)
 }
@@ -144,7 +197,7 @@ for rows.Next() {
 var n sql.NullInt64
 if err := rows.Scan(&n); err != nil {
 rows.Close()
-return err
+return fmt.Errorf("scan occupied: %w", err)
 }
 if n.Valid && n.Int64 > 0 {
 occupied[int(n.Int64)] = true
@@ -163,7 +216,9 @@ if position < 1 || position > maxAllowedPosition {
 return ErrPositionTooBig
 }
 var occupied int
-if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM participants WHERE message_id=? AND isDeleted=0 AND order_number=? AND user_id<>?", messageID, position, user.ID).Scan(&occupied); err != nil {
+if err := tx.QueryRowContext(ctx,
+"SELECT COUNT(*) FROM participants WHERE message_id=? AND isDeleted=0 AND order_number=? AND user_id<>?",
+messageID, position, user.ID).Scan(&occupied); err != nil {
 return fmt.Errorf("check occupied: %w", err)
 }
 if occupied > 0 {
@@ -175,21 +230,30 @@ targetPos = position
 stmt, err := tx.PrepareContext(ctx, `INSERT INTO participants(message_id, user_id, user_name, order_number)
 VALUES (?, ?, ?, ?)
 ON CONFLICT(message_id, user_id) DO UPDATE SET
-user_name=excluded.user_name, isDeleted=0, joined_at=CURRENT_TIMESTAMP, order_number=excluded.order_number`)
+user_name=excluded.user_name,
+isDeleted=0,
+joined_at=CURRENT_TIMESTAMP,
+order_number=excluded.order_number`)
 if err != nil {
 return fmt.Errorf("prepare join: %w", err)
 }
 defer stmt.Close()
 if _, err := stmt.ExecContext(ctx, messageID, user.ID, user.Name, targetPos); err != nil {
+if isUniqueViolation(err) {
+return ErrPositionOccupied
+}
 return fmt.Errorf("exec join: %w", err)
 }
-return tx.Commit()
+if err := tx.Commit(); err != nil {
+if isUniqueViolation(err) {
+return ErrPositionOccupied
+}
+return fmt.Errorf("commit join: %w", err)
+}
+return nil
 }
 
 func (s Database) SwitchPositions(ctx context.Context, messageID string, userID int64, position int) error {
-if err := s.migrateOrderNumbers(ctx); err != nil {
-return err
-}
 tx, err := s.db.BeginTx(ctx, nil)
 if err != nil {
 return fmt.Errorf("begin tx: %w", err)
@@ -197,7 +261,9 @@ return fmt.Errorf("begin tx: %w", err)
 defer func() { _ = tx.Rollback() }()
 
 var myPos sql.NullInt64
-err = tx.QueryRowContext(ctx, "SELECT order_number FROM participants WHERE message_id=? AND user_id=? AND isDeleted=0", messageID, userID).Scan(&myPos)
+err = tx.QueryRowContext(ctx,
+"SELECT order_number FROM participants WHERE message_id=? AND user_id=? AND isDeleted=0",
+messageID, userID).Scan(&myPos)
 if errors.Is(err, sql.ErrNoRows) {
 return ErrNotInQueue
 }
@@ -212,7 +278,9 @@ return ErrSamePosition
 }
 
 var otherID int64
-err = tx.QueryRowContext(ctx, "SELECT user_id FROM participants WHERE message_id=? AND order_number=? AND isDeleted=0", messageID, position).Scan(&otherID)
+err = tx.QueryRowContext(ctx,
+"SELECT user_id FROM participants WHERE message_id=? AND order_number=? AND isDeleted=0",
+messageID, position).Scan(&otherID)
 if errors.Is(err, sql.ErrNoRows) {
 return ErrPositionEmpty
 }
@@ -220,17 +288,28 @@ if err != nil {
 return fmt.Errorf("get other: %w", err)
 }
 
-if _, err := tx.ExecContext(ctx, "UPDATE participants SET order_number=? WHERE message_id=? AND user_id=?", position, messageID, userID); err != nil {
-return fmt.Errorf("update my pos: %w", err)
+if _, err := tx.ExecContext(ctx,
+"UPDATE participants SET order_number=? WHERE message_id=? AND user_id=?",
+tempSwitchPosition, messageID, userID); err != nil {
+return fmt.Errorf("step1 switch: %w", err)
 }
-if _, err := tx.ExecContext(ctx, "UPDATE participants SET order_number=? WHERE message_id=? AND user_id=?", int(myPos.Int64), messageID, otherID); err != nil {
-return fmt.Errorf("update other pos: %w", err)
+if _, err := tx.ExecContext(ctx,
+"UPDATE participants SET order_number=? WHERE message_id=? AND user_id=?",
+int(myPos.Int64), messageID, otherID); err != nil {
+return fmt.Errorf("step2 switch: %w", err)
+}
+if _, err := tx.ExecContext(ctx,
+"UPDATE participants SET order_number=? WHERE message_id=? AND user_id=?",
+position, messageID, userID); err != nil {
+return fmt.Errorf("step3 switch: %w", err)
 }
 return tx.Commit()
 }
 
 func (s Database) KickAtPosition(ctx context.Context, messageID string, position int) error {
-res, err := s.db.ExecContext(ctx, "UPDATE participants SET isDeleted=1 WHERE message_id=? AND order_number=? AND isDeleted=0", messageID, position)
+res, err := s.db.ExecContext(ctx,
+"UPDATE participants SET isDeleted=1 WHERE message_id=? AND order_number=? AND isDeleted=0",
+messageID, position)
 if err != nil {
 return fmt.Errorf("kick at position: %w", err)
 }
@@ -242,7 +321,9 @@ return nil
 }
 
 func (s Database) LeaveQueue(ctx context.Context, messageID string, userID int64) error {
-_, err := s.db.ExecContext(ctx, "UPDATE participants SET isDeleted=1 WHERE message_id=? AND user_id=? AND isDeleted=0", messageID, userID)
+_, err := s.db.ExecContext(ctx,
+"UPDATE participants SET isDeleted=1 WHERE message_id=? AND user_id=? AND isDeleted=0",
+messageID, userID)
 return err
 }
 
@@ -271,15 +352,16 @@ return tx.Commit()
 }
 
 func (s Database) GetQueue(ctx context.Context, messageID string) (entity.Queue, error) {
-if err := s.migrateOrderNumbers(ctx); err != nil {
-return entity.Queue{}, err
-}
 var description string
 var currentUserIndex int
-if err := s.db.QueryRowContext(ctx, "SELECT description, current_user_index FROM queues WHERE message_id=?", messageID).Scan(&description, &currentUserIndex); err != nil {
+if err := s.db.QueryRowContext(ctx,
+"SELECT description, current_user_index FROM queues WHERE message_id=?",
+messageID).Scan(&description, &currentUserIndex); err != nil {
 return entity.Queue{}, fmt.Errorf("scan queue: %w", err)
 }
-rows, err := s.db.QueryContext(ctx, "SELECT user_id, user_name, COALESCE(order_number, 0) FROM participants WHERE message_id=? AND isDeleted=0 ORDER BY COALESCE(order_number, 1000000), joined_at", messageID)
+rows, err := s.db.QueryContext(ctx,
+"SELECT user_id, user_name, COALESCE(order_number, 0) FROM participants WHERE message_id=? AND isDeleted=0 ORDER BY COALESCE(order_number, 1000000), joined_at",
+messageID)
 if err != nil {
 return entity.Queue{}, fmt.Errorf("query users: %w", err)
 }
@@ -305,7 +387,9 @@ Deleted  int
 }
 
 func (s Database) DebugPositions(ctx context.Context, messageID string) ([]DebugRow, error) {
-rows, err := s.db.QueryContext(ctx, "SELECT user_id, user_name, COALESCE(order_number, 0), isDeleted FROM participants WHERE message_id=? ORDER BY COALESCE(order_number, 1000000), joined_at", messageID)
+rows, err := s.db.QueryContext(ctx,
+"SELECT user_id, user_name, COALESCE(order_number, 0), isDeleted FROM participants WHERE message_id=? ORDER BY COALESCE(order_number, 1000000), joined_at",
+messageID)
 if err != nil {
 return nil, err
 }
@@ -323,7 +407,8 @@ return result, nil
 
 func (s Database) DebugChatQueues(ctx context.Context, chatID int64) ([]string, error) {
 prefix := fmt.Sprintf("%d:%%", chatID)
-rows, err := s.db.QueryContext(ctx, "SELECT message_id FROM queues WHERE message_id LIKE ? ORDER BY message_id", prefix)
+rows, err := s.db.QueryContext(ctx,
+"SELECT message_id FROM queues WHERE message_id LIKE ? ORDER BY message_id", prefix)
 if err != nil {
 return nil, err
 }
@@ -339,39 +424,59 @@ keys = append(keys, k)
 return keys, nil
 }
 
-func (s Database) StartQueue(ctx context.Context, messageID string, isShuffle bool) error {
-if err := s.migrateOrderNumbers(ctx); err != nil {
-return err
-}
+// StartQueue — двухфазный renumber через temp-таблицу, чтобы не нарушить UNIQUE.
+func (s Database) StartQueue(ctx context.Context, messageID string) error {
 tx, err := s.db.BeginTx(ctx, nil)
 if err != nil {
-return fmt.Errorf("begin tx: %w", err)
+return fmt.Errorf("StartQueue begin tx: %w", err)
 }
 defer func() { _ = tx.Rollback() }()
 
-if _, err := tx.ExecContext(ctx, "UPDATE queues SET current_user_index=0 WHERE message_id=?", messageID); err != nil {
+if _, err := tx.ExecContext(ctx,
+"UPDATE queues SET current_user_index=0 WHERE message_id=?", messageID); err != nil {
 return fmt.Errorf("reset idx: %w", err)
 }
-orderExpr := "COALESCE(order_number, 1000000), joined_at"
-if isShuffle {
-orderExpr = "random()"
+
+if _, err := tx.ExecContext(ctx, "DROP TABLE IF EXISTS temp._start_order"); err != nil {
+return fmt.Errorf("drop temp: %w", err)
 }
-if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
-UPDATE participants SET order_number = (
-SELECT rn FROM (
-SELECT user_id, ROW_NUMBER() OVER (ORDER BY %s) AS rn
-FROM participants WHERE message_id=$1 AND isDeleted=0
-) AS sub
-WHERE participants.user_id=sub.user_id AND participants.message_id=$1
+if _, err := tx.ExecContext(ctx, `
+CREATE TEMP TABLE _start_order (
+user_id INTEGER NOT NULL PRIMARY KEY,
+rn      INTEGER NOT NULL
+)`); err != nil {
+return fmt.Errorf("create temp: %w", err)
+}
+if _, err := tx.ExecContext(ctx, `
+INSERT INTO _start_order (user_id, rn)
+SELECT user_id, ROW_NUMBER() OVER (
+ORDER BY COALESCE(order_number, 1000000), joined_at
 )
-WHERE message_id=$1 AND isDeleted=0`, orderExpr), messageID); err != nil {
-return fmt.Errorf("renumber: %w", err)
+FROM participants WHERE message_id=$1 AND isDeleted=0`, messageID); err != nil {
+return fmt.Errorf("snapshot: %w", err)
 }
+if _, err := tx.ExecContext(ctx, `
+UPDATE participants SET order_number = 1000000 + rowid
+WHERE message_id=$1 AND isDeleted=0`, messageID); err != nil {
+return fmt.Errorf("offset: %w", err)
+}
+if _, err := tx.ExecContext(ctx, `
+UPDATE participants SET order_number = (
+SELECT rn FROM _start_order WHERE _start_order.user_id = participants.user_id
+)
+WHERE message_id=$1 AND isDeleted=0`, messageID); err != nil {
+return fmt.Errorf("assign: %w", err)
+}
+if _, err := tx.ExecContext(ctx, "DROP TABLE IF EXISTS temp._start_order"); err != nil {
+return fmt.Errorf("cleanup: %w", err)
+}
+
 return tx.Commit()
 }
 
 func (s Database) IncrementCurrentPerson(ctx context.Context, messageID string) error {
-_, err := s.db.ExecContext(ctx, "UPDATE queues SET current_user_index=current_user_index+1 WHERE message_id=?", messageID)
+_, err := s.db.ExecContext(ctx,
+"UPDATE queues SET current_user_index=current_user_index+1 WHERE message_id=?", messageID)
 return err
 }
 
@@ -392,7 +497,8 @@ return tx.Commit()
 
 func (s Database) SaveUserName(ctx context.Context, userID int64, fullName string) error {
 _, err := s.db.ExecContext(ctx, `INSERT INTO user_names(user_id, full_name) VALUES (?, ?)
-ON CONFLICT(user_id) DO UPDATE SET full_name=excluded.full_name, updated_at=CURRENT_TIMESTAMP`, userID, fullName)
+ON CONFLICT(user_id) DO UPDATE SET full_name=excluded.full_name, updated_at=CURRENT_TIMESTAMP`,
+userID, fullName)
 return err
 }
 
@@ -407,7 +513,8 @@ return name, err
 
 func (s Database) GetLastQueueKeyInChatThread(ctx context.Context, chatID int64, threadID int) (string, error) {
 prefix := fmt.Sprintf("%d:%d:", chatID, threadID)
-rows, err := s.db.QueryContext(ctx, "SELECT message_id FROM queues WHERE message_id LIKE ?", prefix+"%")
+rows, err := s.db.QueryContext(ctx,
+"SELECT message_id FROM queues WHERE message_id LIKE ?", prefix+"%")
 if err != nil {
 return "", fmt.Errorf("query keys: %w", err)
 }
@@ -436,7 +543,8 @@ return best, nil
 }
 
 func NewDatabase(databasePath string) (*Database, error) {
-db, err := sql.Open("sqlite", fmt.Sprintf("%s?cache=shared", databasePath))
+dsn := fmt.Sprintf("file:%s?cache=shared&_txlock=immediate&_busy_timeout=5000", databasePath)
+db, err := sql.Open("sqlite", dsn)
 if err != nil {
 return nil, fmt.Errorf("open db: %w", err)
 }
@@ -445,8 +553,16 @@ return nil, fmt.Errorf("create tables: %w", err)
 }
 d := &Database{db: db}
 ctx := context.Background()
+
+// порядок важен: DROP INDEX до миграции, UNIQUE создаём ПОСЛЕ renumber
+_, _ = db.Exec("DROP INDEX IF EXISTS idx_participants_msg_pos")
 _ = d.migrateOldKeys(ctx)
-_ = d.migrateOrderNumbers(ctx)
+if err := d.fullRenumber(ctx); err != nil {
+return nil, fmt.Errorf("full renumber: %w", err)
+}
+if _, err := db.Exec(CreateUniquePosIndex); err != nil {
+return nil, fmt.Errorf("create unique pos index: %w", err)
+}
 return d, nil
 }
 

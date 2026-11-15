@@ -38,7 +38,7 @@ const HelloMessage = `Привет! Я бот для создания очере
 • /switch N — поменяться с позицией N (админ)
 • /kick N — выгнать с позиции N (админ)
 • /kickfirst — убрать первого (админ)
-• /close — закрыть очередь (админ)
+• /close — закрыть очередь (админ, с подтверждением)
 • /help — эта справка
 
 В каждой теме — своя очередь, только одна открытая одновременно.`
@@ -67,10 +67,15 @@ const HelpMessage = `Команды:
 /switch N — поменяться местами с позицией N (админ)
 /kick N — выгнать с позиции N (админ)
 /kickfirst — убрать первого (админ)
-/close — закрыть очередь (админ)
+/close — закрыть очередь (админ, потребует подтверждения)
 /debug — диагностика (админ)
 
 /join работает ТОЛЬКО в той теме, где уже открыта очередь.`
+
+const CloseConfirmMessage = "Вы уверены, что хотите закрыть очередь? Это действие нельзя отменить. Нажмите «Да, закрыть» для подтверждения."
+const CloseDoneMessage = "'Очередь' закрыта 🎉"
+const CloseCanceledMessage = "Закрытие отменено."
+const CloseAlreadyGoneMessage = "Очередь уже закрыта."
 
 type TelegramBot struct {
 TgBot *tgbotapi.BotAPI
@@ -150,6 +155,16 @@ return err
 func (b TelegramBot) SendKickUsage(chatID int64, threadID int) error {
 msg := tgbotapi.NewMessage(chatID, KickUsageMessage)
 msg.MessageThreadID = threadIDForSend(threadID)
+_, err := b.TgBot.Send(msg)
+return err
+}
+
+// sendCloseConfirm — отправляет сообщение с кнопками Да/Отмена для конкретной очереди key.
+func (b TelegramBot) sendCloseConfirm(chatID int64, threadID int, key string) error {
+msg := tgbotapi.NewMessage(chatID, CloseConfirmMessage)
+msg.MessageThreadID = threadIDForSend(threadID)
+kb := GetCloseConfirmKeyboard(key)
+msg.ReplyMarkup = kb
 _, err := b.TgBot.Send(msg)
 return err
 }
@@ -393,6 +408,7 @@ return err
 return b.refreshQueueMessage(ctx, key)
 }
 
+// CloseQueueFromCommand — /close: права, наличие очереди, отправка подтверждения.
 func (b TelegramBot) CloseQueueFromCommand(chatID, userID int64, threadID int) error {
 ctx := context.Background()
 isAdmin, err := b.IsChatAdmin(ctx, chatID, userID)
@@ -409,11 +425,79 @@ return err
 if key == "" {
 return ErrNoQueue
 }
-_, _, msgID, _ := parseQueueKey(key)
-if _, err := b.TgBot.Request(GetFinishedMessage(chatID, msgID)); err != nil {
+return b.sendCloseConfirm(chatID, threadID, key)
+}
+
+// RequestCloseConfirm — нажатие "Закрыть" под сообщением: права + отправка подтверждения с key.
+func (b TelegramBot) RequestCloseConfirm(ctx context.Context, cb *tgbotapi.CallbackQuery) error {
+chatID := cb.Message.Chat.ID
+userID := cb.From.ID
+tid := threadIDForSend(cb.Message.MessageThreadID)
+
+isAdmin, err := b.IsChatAdmin(ctx, chatID, userID)
+if err != nil {
 return err
 }
-return b.u.FinishQueue(ctx, key)
+if !isAdmin {
+return ErrNotAdmin
+}
+key, err := b.u.GetLastQueueKeyInChatThread(ctx, chatID, tid)
+if err != nil {
+return err
+}
+if key == "" {
+return ErrNoQueue
+}
+return b.sendCloseConfirm(chatID, tid, key)
+}
+
+// ConfirmClose — "Да, закрыть" для конкретной очереди key (из callback data).
+// Защита от race: даже если в чате уже создали новую очередь, закроется именно эта.
+func (b TelegramBot) ConfirmClose(ctx context.Context, cb *tgbotapi.CallbackQuery, key string) error {
+chatID := cb.Message.Chat.ID
+userID := cb.From.ID
+
+isAdmin, err := b.IsChatAdmin(ctx, chatID, userID)
+if err != nil {
+return err
+}
+if !isAdmin {
+return ErrNotAdmin
+}
+
+keyChatID, _, msgID, err := parseQueueKey(key)
+if err != nil {
+return fmt.Errorf("invalid key in callback: %w", err)
+}
+
+// проверяем, что очередь ещё существует
+if _, err := b.u.GetQueue(ctx, key); err != nil {
+// уже закрыта или удалена
+edit := tgbotapi.NewEditMessageText(chatID, cb.Message.MessageID, CloseAlreadyGoneMessage)
+_, _ = b.TgBot.Request(edit)
+return nil
+}
+
+// редактируем исходное сообщение очереди
+if _, err := b.TgBot.Request(GetFinishedMessage(keyChatID, msgID)); err != nil {
+slog.Warn("Couldn't edit original queue message", "error", err, "key", key)
+}
+// удаляем из БД
+if err := b.u.FinishQueue(ctx, key); err != nil {
+return err
+}
+// редактируем сообщение-подтверждение
+edit := tgbotapi.NewEditMessageText(chatID, cb.Message.MessageID, CloseDoneMessage)
+_, _ = b.TgBot.Request(edit)
+slog.Info("Queue closed via confirm", "key", key, "by", userID)
+return nil
+}
+
+// CancelClose — "Отмена": помечаем сообщение, ничего не закрываем.
+func (b TelegramBot) CancelClose(ctx context.Context, cb *tgbotapi.CallbackQuery) error {
+edit := tgbotapi.NewEditMessageText(cb.Message.Chat.ID, cb.Message.MessageID, CloseCanceledMessage)
+_, err := b.TgBot.Request(edit)
+return err
 }
 
 func (b TelegramBot) refreshQueueMessage(ctx context.Context, key string) error {
@@ -439,9 +523,9 @@ return false, err
 return member.Status == "administrator" || member.Status == "creator", nil
 }
 
-func (b TelegramBot) Start(ctx context.Context, cb *tgbotapi.CallbackQuery, isShuffled bool) error {
+func (b TelegramBot) Start(ctx context.Context, cb *tgbotapi.CallbackQuery) error {
 key := keyFromCallback(cb)
-if err := b.u.StartQueue(ctx, key, isShuffled); err != nil {
+if err := b.u.StartQueue(ctx, key); err != nil {
 return err
 }
 return b.sendStatus(ctx, cb)
@@ -471,14 +555,6 @@ return err
 }
 _, err = b.TgBot.Request(GetQueueMessage(cb.Message.Chat.ID, cb.Message.MessageID, queue.Users, queue.Description))
 return err
-}
-
-func (b TelegramBot) FinishQueue(ctx context.Context, cb *tgbotapi.CallbackQuery) error {
-key := keyFromCallback(cb)
-if _, err := b.TgBot.Request(GetFinishedMessage(cb.Message.Chat.ID, cb.Message.MessageID)); err != nil {
-return err
-}
-return b.u.FinishQueue(ctx, key)
 }
 
 func (b TelegramBot) sendStatus(ctx context.Context, cb *tgbotapi.CallbackQuery) error {
