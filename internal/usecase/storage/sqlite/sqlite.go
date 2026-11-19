@@ -31,10 +31,6 @@ type Database struct{ db *sql.DB }
 
 func (s Database) Close() error { return s.db.Close() }
 
-// compactPositions — сжимает order_number в плотные 1..N для одной очереди.
-// Читает порядок в Go и проставляет 1..N по одному UPDATE — надёжно, без SQLite-
-// подзапросов, которые могут видеть промежуточное состояние.
-// Вызывается внутри уже открытой транзакции.
 func compactPositions(ctx context.Context, tx *sql.Tx, messageID string) error {
 rows, err := tx.QueryContext(ctx, `
 SELECT user_id FROM participants
@@ -57,7 +53,6 @@ if len(userIDs) == 0 {
 return nil
 }
 
-// Сдвигаем в недостижимый диапазон, чтобы не конфликтовать с UNIQUE на промежуточных шагах
 if _, err := tx.ExecContext(ctx, `
 UPDATE participants SET order_number = 1000000 + rowid
 WHERE message_id=? AND isDeleted=0`, messageID); err != nil {
@@ -80,7 +75,6 @@ return fmt.Errorf("set pos %d: %w", i+1, err)
 return nil
 }
 
-// fullRenumber — компакция по всем очередям (старт БД).
 func (s Database) fullRenumber(ctx context.Context) error {
 rows, err := s.db.QueryContext(ctx, "SELECT message_id FROM queues")
 if err != nil {
@@ -332,6 +326,56 @@ return fmt.Errorf("step3 switch: %w", err)
 return tx.Commit()
 }
 
+// SwapFirstTwo — меняет местами участников на позициях 1 и 2.
+// Если хотя бы на одной из них никого нет — ErrPositionEmpty.
+func (s Database) SwapFirstTwo(ctx context.Context, messageID string) error {
+tx, err := s.db.BeginTx(ctx, nil)
+if err != nil {
+return fmt.Errorf("begin tx: %w", err)
+}
+defer func() { _ = tx.Rollback() }()
+
+var uid1 sql.NullInt64
+err = tx.QueryRowContext(ctx,
+"SELECT user_id FROM participants WHERE message_id=? AND order_number=1 AND isDeleted=0",
+messageID).Scan(&uid1)
+if errors.Is(err, sql.ErrNoRows) || !uid1.Valid {
+return ErrPositionEmpty
+}
+if err != nil {
+return fmt.Errorf("get #1: %w", err)
+}
+
+var uid2 sql.NullInt64
+err = tx.QueryRowContext(ctx,
+"SELECT user_id FROM participants WHERE message_id=? AND order_number=2 AND isDeleted=0",
+messageID).Scan(&uid2)
+if errors.Is(err, sql.ErrNoRows) || !uid2.Valid {
+return ErrPositionEmpty
+}
+if err != nil {
+return fmt.Errorf("get #2: %w", err)
+}
+
+// swap через temp
+if _, err := tx.ExecContext(ctx,
+"UPDATE participants SET order_number=? WHERE message_id=? AND user_id=?",
+tempSwitchPosition, messageID, uid1.Int64); err != nil {
+return fmt.Errorf("step1 swap12: %w", err)
+}
+if _, err := tx.ExecContext(ctx,
+"UPDATE participants SET order_number=1 WHERE message_id=? AND user_id=?",
+messageID, uid2.Int64); err != nil {
+return fmt.Errorf("step2 swap12: %w", err)
+}
+if _, err := tx.ExecContext(ctx,
+"UPDATE participants SET order_number=2 WHERE message_id=? AND user_id=?",
+messageID, uid1.Int64); err != nil {
+return fmt.Errorf("step3 swap12: %w", err)
+}
+return tx.Commit()
+}
+
 func (s Database) KickAtPosition(ctx context.Context, messageID string, position int) error {
 res, err := s.db.ExecContext(ctx,
 "UPDATE participants SET isDeleted=1 WHERE message_id=? AND order_number=? AND isDeleted=0",
@@ -353,7 +397,6 @@ messageID, userID)
 return err
 }
 
-// KickFirstUser — удаляет первого (минимальный order_number) и сжимает оставшихся в плотные 1..N.
 func (s Database) KickFirstUser(ctx context.Context, messageID string) error {
 tx, err := s.db.BeginTx(ctx, nil)
 if err != nil {

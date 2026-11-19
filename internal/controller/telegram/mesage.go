@@ -20,6 +20,7 @@ CloseCommand     = "close"
 KickFirstCommand = "kickfirst"
 KickCommand      = "kick"
 SwitchCommand    = "switch"
+Swap12Command    = "swap12"
 PositionsCommand = "positions"
 DebugCommand     = "debug"
 )
@@ -174,6 +175,24 @@ _, _ = s.bot.TgBot.Send(m)
 return nil
 case errors.Is(err, client.ErrSamePosition):
 m := tgbotapi.NewMessage(chatID, "Вы уже на позиции "+strconv.Itoa(pos)+".")
+m.MessageThreadID = threadID
+_, _ = s.bot.TgBot.Send(m)
+return nil
+}
+return s.wrapUserError(err, chatID, threadID)
+case Swap12Command:
+// Проверка админа внутри SwapFirstTwoFromCommand
+err := s.bot.SwapFirstTwoFromCommand(chatID, userID, threadID)
+if err == nil {
+return nil
+}
+switch {
+case errors.Is(err, client.ErrNotAdmin):
+return s.wrapUserError(err, chatID, threadID)
+case errors.Is(err, client.ErrNoQueue):
+return s.wrapUserError(err, chatID, threadID)
+case errors.Is(err, client.ErrPositionEmpty):
+m := tgbotapi.NewMessage(chatID, "Нужны хотя бы 2 участника: первый и второй должны быть на местах.")
 m.MessageThreadID = threadID
 _, _ = s.bot.TgBot.Send(m)
 return nil

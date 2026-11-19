@@ -14,6 +14,7 @@ LeaveQueue(ctx context.Context, messageID string, userID int64) error
 KickFirstUser(ctx context.Context, messageID string) error
 KickAtPosition(ctx context.Context, messageID string, position int) error
 SwitchPositions(ctx context.Context, messageID string, userID int64, position int) error
+SwapFirstTwo(ctx context.Context, messageID string) error
 GetQueue(ctx context.Context, messageID string) (entity.Queue, error)
 FreePositions(ctx context.Context, messageID string) ([]int, error)
 DebugPositions(ctx context.Context, messageID string) ([]sqlite.DebugRow, error)
