@@ -31,56 +31,82 @@ type Database struct{ db *sql.DB }
 
 func (s Database) Close() error { return s.db.Close() }
 
-// fullRenumber — двухфазный renumber всех не удалённых участников по всем очередям.
-// Использует temp-таблицу, чтобы не зависеть от порядка обновления (SQLite
-// пересчитывает подзапрос для каждой строки и видит промежуточное состояние).
+// compactPositions — сжимает order_number в плотные 1..N для одной очереди.
+// Читает порядок в Go и проставляет 1..N по одному UPDATE — надёжно, без SQLite-
+// подзапросов, которые могут видеть промежуточное состояние.
+// Вызывается внутри уже открытой транзакции.
+func compactPositions(ctx context.Context, tx *sql.Tx, messageID string) error {
+rows, err := tx.QueryContext(ctx, `
+SELECT user_id FROM participants
+WHERE message_id=? AND isDeleted=0
+ORDER BY COALESCE(order_number, 1000000), joined_at`, messageID)
+if err != nil {
+return fmt.Errorf("read order: %w", err)
+}
+var userIDs []int64
+for rows.Next() {
+var uid int64
+if err := rows.Scan(&uid); err != nil {
+rows.Close()
+return fmt.Errorf("scan uid: %w", err)
+}
+userIDs = append(userIDs, uid)
+}
+rows.Close()
+if len(userIDs) == 0 {
+return nil
+}
+
+// Сдвигаем в недостижимый диапазон, чтобы не конфликтовать с UNIQUE на промежуточных шагах
+if _, err := tx.ExecContext(ctx, `
+UPDATE participants SET order_number = 1000000 + rowid
+WHERE message_id=? AND isDeleted=0`, messageID); err != nil {
+return fmt.Errorf("offset: %w", err)
+}
+
+stmt, err := tx.PrepareContext(ctx, `
+UPDATE participants SET order_number=?
+WHERE message_id=? AND user_id=?`)
+if err != nil {
+return fmt.Errorf("prepare update: %w", err)
+}
+defer stmt.Close()
+
+for i, uid := range userIDs {
+if _, err := stmt.ExecContext(ctx, i+1, messageID, uid); err != nil {
+return fmt.Errorf("set pos %d: %w", i+1, err)
+}
+}
+return nil
+}
+
+// fullRenumber — компакция по всем очередям (старт БД).
 func (s Database) fullRenumber(ctx context.Context) error {
+rows, err := s.db.QueryContext(ctx, "SELECT message_id FROM queues")
+if err != nil {
+return fmt.Errorf("list queues: %w", err)
+}
+var queueIDs []string
+for rows.Next() {
+var mid string
+if err := rows.Scan(&mid); err != nil {
+rows.Close()
+return err
+}
+queueIDs = append(queueIDs, mid)
+}
+rows.Close()
+
 tx, err := s.db.BeginTx(ctx, nil)
 if err != nil {
-return fmt.Errorf("fullRenumber begin tx: %w", err)
+return fmt.Errorf("begin tx: %w", err)
 }
 defer func() { _ = tx.Rollback() }()
 
-if _, err := tx.ExecContext(ctx, "DROP TABLE IF EXISTS temp._renum"); err != nil {
-return fmt.Errorf("drop temp: %w", err)
+for _, mid := range queueIDs {
+if err := compactPositions(ctx, tx, mid); err != nil {
+return fmt.Errorf("compact %s: %w", mid, err)
 }
-if _, err := tx.ExecContext(ctx, `
-CREATE TEMP TABLE _renum (
-user_id    INTEGER NOT NULL,
-message_id TEXT NOT NULL,
-rn         INTEGER NOT NULL,
-PRIMARY KEY(user_id, message_id)
-)`); err != nil {
-return fmt.Errorf("create temp: %w", err)
-}
-if _, err := tx.ExecContext(ctx, `
-INSERT INTO _renum (user_id, message_id, rn)
-SELECT user_id, message_id,
-       ROW_NUMBER() OVER (
-           PARTITION BY message_id
-           ORDER BY COALESCE(order_number, 1000000), joined_at
-       )
-FROM participants WHERE isDeleted=0`); err != nil {
-return fmt.Errorf("snapshot: %w", err)
-}
-// Фаза 1: гарантированно уникальные значения
-if _, err := tx.ExecContext(ctx, `
-UPDATE participants SET order_number = 1000000 + rowid
-WHERE isDeleted=0`); err != nil {
-return fmt.Errorf("offset: %w", err)
-}
-// Фаза 2: назначаем 1..N из снимка
-if _, err := tx.ExecContext(ctx, `
-UPDATE participants SET order_number = (
-SELECT rn FROM _renum
-WHERE _renum.user_id = participants.user_id
-  AND _renum.message_id = participants.message_id
-)
-WHERE isDeleted=0`); err != nil {
-return fmt.Errorf("assign: %w", err)
-}
-if _, err := tx.ExecContext(ctx, "DROP TABLE IF EXISTS temp._renum"); err != nil {
-return fmt.Errorf("cleanup: %w", err)
 }
 return tx.Commit()
 }
@@ -327,6 +353,7 @@ messageID, userID)
 return err
 }
 
+// KickFirstUser — удаляет первого (минимальный order_number) и сжимает оставшихся в плотные 1..N.
 func (s Database) KickFirstUser(ctx context.Context, messageID string) error {
 tx, err := s.db.BeginTx(ctx, nil)
 if err != nil {
@@ -334,20 +361,30 @@ return fmt.Errorf("begin tx: %w", err)
 }
 defer func() { _ = tx.Rollback() }()
 
-if _, err := tx.ExecContext(ctx, `
+res, err := tx.ExecContext(ctx, `
 UPDATE participants SET isDeleted=1
 WHERE message_id=? AND isDeleted=0 AND user_id = (
 SELECT user_id FROM participants WHERE message_id=? AND isDeleted=0
 ORDER BY COALESCE(order_number, 1000000), joined_at LIMIT 1
-)`, messageID, messageID); err != nil {
+)`, messageID, messageID)
+if err != nil {
 return fmt.Errorf("kick first: %w", err)
 }
+if n, _ := res.RowsAffected(); n == 0 {
+return nil
+}
+
 if _, err := tx.ExecContext(ctx, `
 UPDATE queues SET current_user_index =
 CASE WHEN current_user_index>0 THEN current_user_index-1 ELSE 0 END
 WHERE message_id=?`, messageID); err != nil {
 return fmt.Errorf("adjust idx: %w", err)
 }
+
+if err := compactPositions(ctx, tx, messageID); err != nil {
+return fmt.Errorf("compact after kickfirst: %w", err)
+}
+
 return tx.Commit()
 }
 
@@ -424,7 +461,6 @@ keys = append(keys, k)
 return keys, nil
 }
 
-// StartQueue — двухфазный renumber через temp-таблицу, чтобы не нарушить UNIQUE.
 func (s Database) StartQueue(ctx context.Context, messageID string) error {
 tx, err := s.db.BeginTx(ctx, nil)
 if err != nil {
@@ -436,41 +472,9 @@ if _, err := tx.ExecContext(ctx,
 "UPDATE queues SET current_user_index=0 WHERE message_id=?", messageID); err != nil {
 return fmt.Errorf("reset idx: %w", err)
 }
-
-if _, err := tx.ExecContext(ctx, "DROP TABLE IF EXISTS temp._start_order"); err != nil {
-return fmt.Errorf("drop temp: %w", err)
+if err := compactPositions(ctx, tx, messageID); err != nil {
+return fmt.Errorf("compact at start: %w", err)
 }
-if _, err := tx.ExecContext(ctx, `
-CREATE TEMP TABLE _start_order (
-user_id INTEGER NOT NULL PRIMARY KEY,
-rn      INTEGER NOT NULL
-)`); err != nil {
-return fmt.Errorf("create temp: %w", err)
-}
-if _, err := tx.ExecContext(ctx, `
-INSERT INTO _start_order (user_id, rn)
-SELECT user_id, ROW_NUMBER() OVER (
-ORDER BY COALESCE(order_number, 1000000), joined_at
-)
-FROM participants WHERE message_id=$1 AND isDeleted=0`, messageID); err != nil {
-return fmt.Errorf("snapshot: %w", err)
-}
-if _, err := tx.ExecContext(ctx, `
-UPDATE participants SET order_number = 1000000 + rowid
-WHERE message_id=$1 AND isDeleted=0`, messageID); err != nil {
-return fmt.Errorf("offset: %w", err)
-}
-if _, err := tx.ExecContext(ctx, `
-UPDATE participants SET order_number = (
-SELECT rn FROM _start_order WHERE _start_order.user_id = participants.user_id
-)
-WHERE message_id=$1 AND isDeleted=0`, messageID); err != nil {
-return fmt.Errorf("assign: %w", err)
-}
-if _, err := tx.ExecContext(ctx, "DROP TABLE IF EXISTS temp._start_order"); err != nil {
-return fmt.Errorf("cleanup: %w", err)
-}
-
 return tx.Commit()
 }
 
@@ -554,7 +558,6 @@ return nil, fmt.Errorf("create tables: %w", err)
 d := &Database{db: db}
 ctx := context.Background()
 
-// порядок важен: DROP INDEX до миграции, UNIQUE создаём ПОСЛЕ renumber
 _, _ = db.Exec("DROP INDEX IF EXISTS idx_participants_msg_pos")
 _ = d.migrateOldKeys(ctx)
 if err := d.fullRenumber(ctx); err != nil {
